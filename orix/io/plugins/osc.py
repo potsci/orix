@@ -112,8 +112,7 @@ def file_reader(filename: str) -> CrystalMap:
 def _get_osc_header(file:str) -> Tuple[List[int], List[str], List[str], List[List[float]]]:
     """ return the contens of the head from an .osc file
     function based on mtex functionallity
-    
-    
+    ToDO: implement a way, that we know the phases in advance and do not try to read the header at all
     Parameters
     ----------
     filename
@@ -151,44 +150,53 @@ def _get_osc_header(file:str) -> Tuple[List[int], List[str], List[str], List[Lis
     # headerStartIndices = np.where(np.all(data == headerStart, axis=1))[0]
     # headerStopIndices = np.where(np.all(data == headerStop, axis=1))[0] - 1
 
-    headerBytes = data[headerStartIndices + 8:headerStopIndices]
+    headerBytes = data[headerStartIndices +8 :headerStopIndices]
 
     # Define the list of known phases and initialize variables
     #osc_phases = ['Magnesium']
+    import re
+    import re
     pat = re.compile(r'''
-                (?<!\\.{3})[A-z]{1}[a-z]{4,50}| #beginning big all small or all small
-                (?<!\\.{3})[A-Z]{4,50}| # all big
-                (?<!\\.{3})(?:[A-z]{1,2})+(?:[A-z]{1,2}[0-9]{1,3}\.{0,1}[0-9]{0,5})+|
-                (?<!\\.{3})(?:[A-z]){1,2}(?:[A-z]{1,2}[0-9]{1,2})+
-                #(?<!\\.{2})[[A-z](?:[A-z]{1,3}[0,9]{0,10}){2,10}
-                #(?<!\\.{2})[A-Z][a-z]?\d*|\((?:[^()]*(?:\(.*\))?[^()]*)+\)\d+''',flags=re.ASCII|re.VERBOSE)
+    (?<!\\.{3})[A-z]{1,2}[0-9]{0,4}[ ](?:[A-z]+\d+[A-z]*)*|
+    (?<!\\.{3})[A-z]{1}[a-z\s]{3,50}|#beginning big all small or all small
+    (?<!\\.{3})[A-Z]{4,50}| # all big
+    (?<!\\.{3})(?:[A-z]{1,2})+(?:[A-z]{1,2}[0-9]{1,3}\.{0,1}[0-9]{0,5})+|
+    (?<!\\.{3})(?:[A-z]){1,2}(?:[A-z]{1,2}[0-9]{1,2})+
+    (?<!\\.{3})[A-z]{1,2}[0-9]{0,4}[ ](?:[A-z]+\d+[A-z]*)*
+    #(?<!\\.{2})[[A-z](?:[A-z]{1,3}[0,9]{0,10}){2,10}
+    #(?<!\\.{2})[A-Z][a-z]?\d*|\((?:[^()]*(?:\(.*\))?[^()]*)+\)\d+''',flags=re.ASCII|re.VERBOSE)        #(?<!\\.{2})[A-Z][a-z]?\d*|\((?:[^()]*(?:\(.*\))?[^()]*)+\)\d+''',flags=re.ASCII|re.VERBOSE)
     headerBytes_str="".join([chr(item) for item in headerBytes])
     osc_phases=re.findall(pat,headerBytes_str)
     osc_phases=_is_chemical(osc_phases)
     nPhase = 0
     PhaseStart = []
     PhaseName = []
-    
+
     # Extract phase information 
     # better use regex to find any viable phase names
     for i, phase in enumerate(osc_phases):
-        phaseBytes = bytes(phase, 'utf-8')
-        phaseLoc = bytes(headerBytes_str,'utf-8').find(phaseBytes)
-        
+
+        # it occured that if we match against the strings the results are more accurate
+        phase_ord=[str(ord(item)) for item in phase]
+        phaseBytes_str=np.char.zfill(phase_ord, 4)
+        phaseBytes_str=''.join(phaseBytes_str)
+        phaseIndices=int(data_str.find(phaseBytes_str)/4)
+        phaseLoc=phaseIndices-headerStartIndices-8
+        print(phaseLoc)
         if phaseLoc != -1:
             nPhase += 1
-            PhaseStart.append(phaseLoc + 1)
+            PhaseStart.append(phaseLoc)
             PhaseName.append(osc_phases[i])
 
     if nPhase == 0:
         for i, phase in enumerate(osc_phases):
-            phaseBytes = bytes(phase, 'utf-8')
-            phaseLoc = headerBytes.find(phaseBytes)
-            
-            if phaseLoc != -1:
-                nPhase += 1
-                PhaseStart.append(phaseLoc + 1)
-                PhaseName.append(osc_phases[i])
+                phaseBytes = bytes(phase, 'utf-8')
+                phaseLoc = headerBytes.find(phaseBytes)
+                
+                if phaseLoc != -1:
+                    nPhase += 1
+                    PhaseStart.append(phaseLoc)
+                    PhaseName.append(osc_phases[i])
 
     CS = {
         "name": [],
@@ -201,7 +209,7 @@ def _get_osc_header(file:str) -> Tuple[List[int], List[str], List[str], List[Lis
     for k in range(nPhase):
         CS['id'].append(k)
         CS['name'].append(PhaseName[k])
-        phaseBytes = headerBytes[PhaseStart[k]:PhaseStart[k] + 288]
+        phaseBytes = headerBytes[PhaseStart[k]+3:PhaseStart[k]+ 288] # not excatly sure where the offset of 3 is coming from
         CS['point_group'].append(str(np.frombuffer(phaseBytes[253:257], dtype=np.int32)[0]))
         cellBytes = phaseBytes[257:281]
         CS['lattice_constants'].append([np.concatenate((np.frombuffer(cellBytes[0:12], dtype=np.float32),np.frombuffer(cellBytes[12:], dtype=np.float32)))])
