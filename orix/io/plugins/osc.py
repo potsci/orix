@@ -154,12 +154,21 @@ def _get_osc_header(file:str) -> Tuple[List[int], List[str], List[str], List[Lis
     headerBytes = data[headerStartIndices + 8:headerStopIndices]
 
     # Define the list of known phases and initialize variables
-    osc_phases = ['Magnesium']
-
+    #osc_phases = ['Magnesium']
+    pat = re.compile(r'''
+                (?<!\\.{3})[A-z]{1}[a-z]{4,50}| #beginning big all small or all small
+                (?<!\\.{3})[A-Z]{4,50}| # all big
+                (?<!\\.{3})(?:[A-z]{1,2})+(?:[A-z]{1,2}[0-9]{1,3}\.{0,1}[0-9]{0,5})+|
+                (?<!\\.{3})(?:[A-z]){1,2}(?:[A-z]{1,2}[0-9]{1,2})+
+                #(?<!\\.{2})[[A-z](?:[A-z]{1,3}[0,9]{0,10}){2,10}
+                #(?<!\\.{2})[A-Z][a-z]?\d*|\((?:[^()]*(?:\(.*\))?[^()]*)+\)\d+''',flags=re.ASCII|re.VERBOSE)
+    headerBytes_str="".join([chr(item) for item in headerBytes])
+    osc_phases=re.findall(pat,headerBytes_str)
+    osc_phases=_is_chemical(osc_phases)
     nPhase = 0
     PhaseStart = []
     PhaseName = []
-    headerBytes_str="".join([chr(item) for item in headerBytes])
+    
     # Extract phase information 
     # better use regex to find any viable phase names
     for i, phase in enumerate(osc_phases):
@@ -400,3 +409,34 @@ def _test_alternative_pointgroups(point_groups:[str]):
             point_groups[i]='622'
     return point_groups
             
+
+def _is_chemical(phases: [str])-> [str]:
+    """ this function shall test, whether the found phases from the binary osc header are actually chemical elements
+        it accepts strings that are larger then 4 or strings of lenght 1-2 that are found in the Periodic table of elements
+    """
+
+    from periodictable import elements
+    elems=[]
+    for el in elements:
+        elems.append(el.symbol)
+    # print(elems)
+    elements_input=[]
+    pat=re.compile(r'''[A-z]{4,50}(?!\d+)|
+                    [A-z]{1,2}(?=\d)|
+                    [A-z]{1,2}(?=[A-Z]{1,2})|
+                    [A-z]{1,2}(?=[A-Z]{1}[a-z]{1})|
+                    [A-z]{1,2}(?=[a-z]{2})''',flags=re.ASCII|re.VERBOSE)
+    for phase in phases:
+        check=1
+        for el_input in re.findall(pat,phase):
+            # print(el_input)
+            if not el_input in elems:
+                check=0
+            if len(el_input)>4:
+                check=1
+
+        if check==0:
+            phases.remove(phase)
+
+
+    return phases
