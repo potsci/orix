@@ -1,93 +1,119 @@
-"""Reader of a crystal map from an .osc file in formats produced by EDAX
-    This code is a conversion from the mtex load_osc file
+
+"""Reader of a crystal map from an .ang file in formats produced by EDAX
+TSL, NanoMegas ASTAR Index or EMsoft's EMdpmerge program.
 """
 
+from io import TextIOWrapper
+import re
+from typing import List, Optional, Tuple, Union
+import warnings
+
+from diffpy.structure import Lattice, Structure
 import numpy as np
 
-def loadEBSD_osc(fname,**kwargs):
-    ebsd = EBSD()
+from orix import __version__
+from orix.crystal_map import CrystalMap, PhaseList, create_coordinate_arrays
+from orix.quaternion import Rotation
+from orix.quaternion.symmetry import point_group_aliases
 
-    assert fname.endswith('.osc'), "File must have the .osc extension."
+__all__ = ["file_reader", "file_writer"]
 
-    CS = kwargs.get('CS', oscHeader(fname))
+# Plugin description
+format_name = "osc"
+file_extensions = ["osc"]
+writes = True
+writes_this = CrystalMap
 
-    if kwargs.get('check'):
-        return
+def file_reader(filename: str) -> CrystalMap:
+    """Return a crystal map from a file in EDAX TLS's .ang format. The
+    map in the input is assumed to be 2D.
 
-    data, Xstep, Ystep = oscData(fname)
+    Many vendors produce an .ang file. Supported vendors are:
 
-    nCols = data.shape[1]
+    * EDAX TSL
+    * NanoMegas ASTAR Index
+    * EMsoft (from program `EMdpmerge`)
+    * orix
 
-    colNames = ['phi1', 'Phi', 'phi2', 'x', 'y', 'ImageQuality', 'ConfidenceIndex', 'Phase', 'SemSignal', 'Fit']
+    All points satisfying the following criteria are classified as not
+    indexed:
 
-    if nCols > 10:
-        for col in range(len(colNames) + 1, nCols):
-            colNames.append(f'unknown_{col}')
-        print('Warning: More column data was passed in than expected. Check your column names make sense!')
-    elif nCols < 5:
-        raise ValueError('Error: Need to pass in at least position and orientation data.')
-    elif nCols < 9:
-        print('Warning: Less column data was passed in than expected. Check your column names make sense.')
+    * EDAX TSL: confidence index == -1
 
-    loader = loadHelper(data, ColumnNames=colNames[:nCols], Radians=True)
+    Parameters
+    ----------
+    filename
+        Path and file name.
 
-    if Xstep != Ystep:  # probably hexagonal
-        unitCell = np.array([
-            [-Xstep/2, -Ystep/3],
-            [-Xstep/2, Ystep/3],
-            [0, 2*Ystep/3],
-            [Xstep/2, Ystep/3],
-            [Xstep/2, -Ystep/3],
-            [0, -2*Ystep/3]
-        ])
+    Returns
+    -------
+    xmap
+        Crystal map.
+    """
+    # Get file header
+    with open(filename) as f:
+        phase_ids, phase_names, symmetries, lattice_constants = _oscHeader(f)
+
+    structures = []
+    for name, abcABG in zip(phase_names, lattice_constants):
+        structures.append(Structure(title=name, lattice=Lattice(*abcABG)))
+
+    # Read all file data
+    file_data = oscData(filename)
+
+    # Get vendor and column names
+    n_rows, n_cols = file_data.shape
+    vendor, column_names = _get_vendor_columns(header, n_cols)
+
+    # Data needed to create a CrystalMap object
+    data_dict = {
+        "euler1": None,
+        "euler2": None,
+        "euler3": None,
+        "x": None,
+        "y": None,
+        "phase_id": None,
+        "prop": {},
+    }
+    for column, name in enumerate(column_names):
+        if name in data_dict.keys():
+            data_dict[name] = file_data[:, column]
+        else:
+            data_dict["prop"][name] = file_data[:, column]
+
+    # Add phase list to dictionary
+    data_dict["phase_list"] = PhaseList(
+        names=phase_names,
+        point_groups=symmetries,
+        structures=structures,
+        ids=phase_ids,
+    )
+
+    # Set which data points are not indexed
+    # TODO: Add not-indexed convention for INDEX ASTAR
+    if vendor in ["orix", "tsl"]:
+        not_indexed = data_dict["prop"]["ci"] == -1
+        data_dict["phase_id"][not_indexed] = -1
+
+    # Set scan unit
+    if vendor == "astar":
+        scan_unit = "nm"
     else:
-        unitCell = np.array([
-            [Xstep/2, -Ystep/2],
-            [Xstep/2, Ystep/2],
-            [-Xstep/2, Ystep/2],
-            [-Xstep/2, -Ystep/2]
-        ])
+        scan_unit = "um"
+    data_dict["scan_unit"] = scan_unit
 
-    ebsd = EBSD(loader.getRotations(), loader.getColumnData('phase'), CS,
-                loader.getOptions('ignoreColumns', 'phase'), unitCell=unitCell)
+    # Create rotations
+    data_dict["rotations"] = Rotation.from_euler(
+        np.column_stack(
+            (data_dict.pop("euler1"), data_dict.pop("euler2"), data_dict.pop("euler3"))
+        ),
+    )
 
-    rot = [
-        rotation.byAxisAngle(xvector + yvector, 180 * degree),
-        rotation.byAxisAngle(xvector - yvector, 180 * degree),
-        rotation.byAxisAngle(xvector, 180 * degree),
-        rotation.byAxisAngle(yvector, 180 * degree)
-    ]
-
-    corSettings = ['notSet', 'setting 1', 'setting 2', 'setting 3', 'setting 4']
-    corSetting = get_flag(kwargs, corSettings, 'notSet')
-    corSetting = corSettings.index(corSetting.lower()) - 1
-
-    if kwargs.get('convertSpatial2EulerReferenceFrame'):
-        flag = 'keepEuler'
-        opt = 'convertSpatial2EulerReferenceFrame'
-    elif kwargs.get('convertEuler2SpatialReferenceFrame'):
-        flag = 'keepXY'
-        opt = 'convertEuler2SpatialReferenceFrame'
-    else:
-        if not kwargs.get('wizard'):
-            print('Warning: .ang files usually have inconsistent conventions for spatial coordinates and Euler angles. You may want to use one of the options "convertSpatial2EulerReferenceFrame" or "convertEuler2SpatialReferenceFrame" to correct for this.')
-        return
-
-    if corSetting == 0:
-        print(f'{opt} was specified, but the reference system setting has not been specified. Assuming "setting 1". Be careful, the default setting of EDAX is "setting 2".')
-        print(f'Please make sure you have chosen the correct setting and specify it explicitly using the syntax:\n'
-              f'ebsd = EBSD.load(fileName, "{opt}", "setting 2")')
-        corSetting = 1
-
-    ebsd = rotate(ebsd, rot[corSetting], flag)
-
-    # The remaining functions oscData and oscHeader are not provided here but can be implemented similarly in Python.
-
-# You will need to implement the oscData and oscHeader functions in Python as well.
+    return CrystalMap(**data_dict)
 
 
-def oscHeader(file):
-   bufferLength = 2**20
+def _oscHeader(file):
+    bufferLength = 2**20
     with open(file, 'rb') as f:
         data = np.fromfile(f, dtype=np.uint8, count=bufferLength)
 
@@ -113,7 +139,7 @@ def oscHeader(file):
     headerBytes = data[headerStartIndices + 8:headerStopIndices]
 
     # Define the list of known phases and initialize variables
-    osc_phases = ['Mg']
+    osc_phases = ['Magnesium']
 
     nPhase = 0
     PhaseStart = []
@@ -140,75 +166,81 @@ def oscHeader(file):
                 PhaseStart.append(phaseLoc + 1)
                 PhaseName.append(osc_phases[i])
 
-    CS = [None] * nPhase
+    CS = {
+        "name": [],
+        "point_group": [],
+        "lattice_constants": [],
+        "id": [],
+    }
 
     # Extract crystal symmetry information
     for k in range(nPhase):
+        CS['id'].append(k)
+        CS['name'].append(PhaseName[k])
         phaseBytes = headerBytes[PhaseStart[k]:PhaseStart[k] + 288]
-        laueGroup = str(np.frombuffer(phaseBytes[256:260], dtype=np.int32)[0])
-        cellBytes = phaseBytes[260:284]
-        axLength = np.frombuffer(cellBytes[0:12], dtype=np.float32)
-        axAngle = np.frombuffer(cellBytes[12:], dtype=np.float32) * np.deg2rad(1)
-        numHKL = np.frombuffer(phaseBytes[284:], dtype=np.int32)[0]
+        CS['point_group'].append(str(np.frombuffer(phaseBytes[253:257], dtype=np.int32)[0]))
+        cellBytes = phaseBytes[257:281]
+        CS['lattice_constants'].append([np.concatenate((np.frombuffer(cellBytes[0:12], dtype=np.float32),np.frombuffer(cellBytes[12:], dtype=np.float32)))])
+        print(CS)
+        # = np.frombuffer(cellBytes[12:], dtype=np.float32) * np.deg2rad(1)
+        # numHKL = np.frombuffer(phaseBytes[284:], dtype=np.int32)[0]
         
-        options = []
+        # options = []
         
-        if laueGroup in ['126']:
-            laueGroup = '622'
-            options.append('X||a')
-        elif laueGroup in ['-3m', '32', '3', '62', '6']:
-            options.append('X||a')
-        elif laueGroup == '2':
-            options.append('X||a*')
-            print('Warning: symmetry not yet supported!')
-        elif laueGroup == '1':
-            options.append('X||a')
-        elif laueGroup == '131':
-            laueGroup = '432'
-        elif laueGroup == '20':
-            laueGroup = '2'
-            options.append('X||a')
-        elif np.any(axAngle != np.pi / 2):
-            options.append('X||a')
+        # if laueGroup in ['126']:
+        #     laueGroup = '622'
+        #     options.append('X||a')
+        # elif laueGroup in ['-3m', '32', '3', '62', '6']:
+        #     options.append('X||a')
+        # elif laueGroup == '2':
+        #     options.append('X||a*')
+        #     print('Warning: symmetry not yet supported!')
+        # elif laueGroup == '1':
+        #     options.append('X||a')
+        # elif laueGroup == '131':
+        #     laueGroup = '432'
+        # elif laueGroup == '20':
+        #     laueGroup = '2'
+        #     options.append('X||a')
+        # elif np.any(axAngle != np.pi / 2):
+        #     options.append('X||a')
         
-        CS[k] = (laueGroup, axLength, axAngle, PhaseName[k], options)
+        # CS[k] ={'laueGroup':laueGroup, 'axLength':axLength, 'axAngle':axAngle, 'phase':PhaseName[k], 'options':options}
 
-    return CS
+    return CS['id'],CS['name'],CS['point_group'],CS['lattice_constants']
 
-    def OSCData(file):
-    file='map20231031110414777.osc'
+def oscData(file):
+    # file='map20230512083357665.osc'
     hexArray=['B9','0B','EF','FF','02','00','00','00']
     startBytes= np.array([int(hexNum, 16) for hexNum in list(hexArray)])
         # Open the file and read the header
     with open(file, 'rb') as f:
         header = np.fromfile(f, dtype=np.uint32, count=8)
-        # n = header[7]
-        n=10
-        
-        # Set the default start position and buffer length
-        startPos = 0
+        n = header[6]
+        startpos = 0
         bufferLength = 2**20
         
         # Read data from the file
-        f.seek(startPos, 1)
+        f.seek(startPos, 0)
         startData = np.fromfile(f, dtype=np.uint8, count=bufferLength)
-        
-        # Find the position of the startBytes pattern
-        # startPos = startPos + np.where(np.all(startData == startBytes, axis=1))[0][0]
         startBytes_str=startBytes.astype(str)
-        startData_str=startData.astype(str)
-        startData_str=''.join(startData_str)
+        startBytes_str=np.char.zfill(startBytes_str, 4)
         startBytes_str=''.join(startBytes_str)
+
+        startData_str=startData.astype(str)
+        startData_str=np.char.zfill(startData_str, 4)
+        startData_str=''.join(startData_str)
+        
+        
         startindex=startData_str.find(startBytes_str)
-        startpos=startpos+startindex/2
+        startpos=int(startpos+startindex/4)
         # Move to the position after startBytes
-        f.seek(startPos + 8, 0)
-        
+        f.seek(startpos+8 , 0)
         # Check for different versions of the .osc file
-        dn = np.fromfile(f, dtype=np.uint32, count=1)
-        if np.round(((dn[0] / 4 - 2) / 10) / n) != 1:
-            f.seek(startPos + 8, 0)
-        
+        dn = np.fromfile(f, dtype=np.uint32, count=1) 
+        # if np.round(((dn[0] / 4 - 2) / 10) / n) != 1: # this seems to not necessarily work correctly
+            # f.seek(startPos + 8, 1)
+        # print(dn)
         # Collect the Xstep and Ystep values
         Xstep = np.fromfile(f, dtype=np.float32, count=1)[0]
         if Xstep == 0:
@@ -219,16 +251,18 @@ def oscHeader(file):
         
         # Read the data columns into an array
         position = f.tell()
-        for i in range(5, 31):
+        for i in range(5, 30):
             data = np.fromfile(f, dtype=np.float32, count=n * i)
             data = data.reshape((n, i))
             data = data.T
             
             # Check if Xstep and Ystep match the data
-            if np.isclose(data[1, 4], Xstep, rtol=1e-4) and np.isclose(data[1, 5], 0, rtol=1e-4):
+            if np.isclose(data[3, 1], Xstep, rtol=1e-4) and np.isclose(data[4, 1], 0, rtol=1e-4):
                 break
             assert i != 30, "Max number of columns reached, format not handled"
             
             f.seek(position, 0)
 
     return data, Xstep, Ystep
+
+

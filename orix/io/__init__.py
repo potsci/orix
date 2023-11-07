@@ -87,10 +87,28 @@ def loadctf(file_string: str) -> Rotation:
     rotation
         Rotations in the file.
     """
-    data = np.loadtxt(file_string, skiprows=17)[:, 5:8]
+    data = np.loadtxt(file_string, skiprows=17)[:,5:8]
     euler = np.radians(data)
     return Rotation.from_euler(euler)
 
+# def loadosc(file_sting: str) -> Rotation:
+#      """Load ``.osc`` files.
+
+#     Parameters
+#     ----------
+#     file_string
+#         Path to the ``.osc`` file. his file is assumed to list the
+#         Euler angles in the Bunge convention in the first three columns.
+#         The files are binary and decoding is copied from the respective mtex functionallity
+
+#     Returns
+#     -------
+#     rotation
+#         Rotations in the file.
+#     """
+#     data = np.loadtxt(file_string, skiprows=17)[:,5:8]
+#     euler = np.radians(data)
+#     return Rotation.from_euler(euler)
 
 def load(filename: Union[str, Path], **kwargs) -> CrystalMap:
     """Load data from a supported file format listed in
