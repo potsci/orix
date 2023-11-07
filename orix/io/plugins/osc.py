@@ -50,20 +50,21 @@ def file_reader(filename: str) -> CrystalMap:
     xmap
         Crystal map.
     """
-    # Get file header
-    with open(filename) as f:
-        phase_ids, phase_names, symmetries, lattice_constants = _oscHeader(f)
-
+    # Get file heade
+    phase_ids, phase_names, symmetries, lattice_constants = _get_osc_header(filename)
+    symmetries=_test_alternative_pointgroups(symmetries)
     structures = []
     for name, abcABG in zip(phase_names, lattice_constants):
+        abcABG=abcABG[0].tolist()
         structures.append(Structure(title=name, lattice=Lattice(*abcABG)))
 
     # Read all file data
-    file_data = oscData(filename)
-
+    file_data,xstep,ystep = _get_osc_data(filename)
+    file_data=file_data.T
     # Get vendor and column names
     n_rows, n_cols = file_data.shape
-    vendor, column_names = _get_vendor_columns(header, n_cols)
+    print(n_rows,n_cols)
+    vendor, column_names = _get_vendor_columns(n_cols)
 
     # Data needed to create a CrystalMap object
     data_dict = {
@@ -96,11 +97,7 @@ def file_reader(filename: str) -> CrystalMap:
         data_dict["phase_id"][not_indexed] = -1
 
     # Set scan unit
-    if vendor == "astar":
-        scan_unit = "nm"
-    else:
-        scan_unit = "um"
-    data_dict["scan_unit"] = scan_unit
+    data_dict["scan_unit"] = "um"
 
     # Create rotations
     data_dict["rotations"] = Rotation.from_euler(
@@ -112,7 +109,25 @@ def file_reader(filename: str) -> CrystalMap:
     return CrystalMap(**data_dict)
 
 
-def _oscHeader(file):
+def _get_osc_header(file:str) -> Tuple[List[int], List[str], List[str], List[List[float]]]:
+    """ return the contens of the head from an .osc file
+    function based on mtex functionallity
+    
+    
+    Parameters
+    ----------
+    filename
+        Path and file name.
+
+    Returns
+    -------
+    [phaseid]
+    [phhasename]
+    [pointgroup] (Lauge group).
+    [lattice constants]
+
+    """
+
     bufferLength = 2**20
     with open(file, 'rb') as f:
         data = np.fromfile(f, dtype=np.uint8, count=bufferLength)
@@ -209,7 +224,25 @@ def _oscHeader(file):
 
     return CS['id'],CS['name'],CS['point_group'],CS['lattice_constants']
 
-def oscData(file):
+def _get_osc_data(file):
+    """ parses tha data stored in an osc file
+    to check for integrity, the sript compares whether the x coordinate corresponds with the expected step size
+
+    
+    
+    Parameters
+    ----------
+    filename
+        Path and file name.
+
+    Returns
+    -------
+    data - np nd array´
+    xstep,ystep - floats 
+
+    """
+
+
     # file='map20230512083357665.osc'
     hexArray=['B9','0B','EF','FF','02','00','00','00']
     startBytes= np.array([int(hexNum, 16) for hexNum in list(hexArray)])
@@ -221,7 +254,7 @@ def oscData(file):
         bufferLength = 2**20
         
         # Read data from the file
-        f.seek(startPos, 0)
+        f.seek(startpos, 0)
         startData = np.fromfile(f, dtype=np.uint8, count=bufferLength)
         startBytes_str=startBytes.astype(str)
         startBytes_str=np.char.zfill(startBytes_str, 4)
@@ -266,3 +299,104 @@ def oscData(file):
     return data, Xstep, Ystep
 
 
+def _get_vendor_columns(n_cols_file: int) -> Tuple[str, List[str]]:
+    """Return the .ang file column names and vendor, determined from the
+    header.
+
+    Parameters
+    ----------
+    header
+        List with header lines as individual elements.
+    n_cols_file
+        Number of file columns.
+
+    Returns
+    -------
+    vendor
+        Determined vendor (``"tsl"``, ``"astar"``, ``"emsoft"`` or
+        ``"orix"``).
+    column_names
+        List of column names.
+    """
+    # Assume EDAX TSL by default
+    vendor = "tsl"
+
+    # Variants of vendor column names encountered in real data sets
+    column_names = {
+        "tsl": {
+            0: [
+                "euler1",
+                "euler2",
+                "euler3",
+                "x",
+                "y",
+                "iq",  # Image quality from Hough transform
+                "ci",  # Confidence index
+                "phase_id",
+                "detector_signal",
+                "fit",  # Pattern fit
+                "unknown1",
+                "unknown2",
+                "unknown3",
+                "unknown4",
+            ],
+            1: [
+                "euler1",
+                "euler2",
+                "euler3",
+                "x",
+                "y",
+                "iq",
+                "ci",
+                "phase_id",
+                "detector_signal",
+                "fit",
+            ],
+        },
+        "unknown": {
+            0: [
+                "euler1",
+                "euler2",
+                "euler3",
+                "x",
+                "y",
+                "unknown1",
+                "unknown2",
+                "phase_id",
+            ]
+        },
+    }
+        
+    n_variants = len(column_names[vendor])
+    n_cols_expected = [len(column_names[vendor][k]) for k in range(n_variants)]
+    if n_cols_file not in n_cols_expected:
+        warnings.warn(
+            f"Number of columns, {n_cols_file}, in the file is not equal to "
+            f"the expected number of columns, {n_cols_expected}, for the \n"
+            f"assumed vendor '{vendor}'. Will therefore assume the following "
+            "columns: euler1, euler2, euler3, x, y, unknown1, unknown2, "
+            "phase_id, unknown3, unknown4, etc."
+        )
+        vendor = "unknown"
+        vendor_column_names = column_names[vendor][0]
+        n_cols = len(vendor_column_names)
+        if n_cols_file > n_cols:
+            # Add any extra columns as properties
+            for i in range(n_cols_file - n_cols):
+                vendor_column_names.append("unknown" + str(i + 3))
+    else:
+        idx = np.where(np.equal(n_cols_file, n_cols_expected))[0][0]
+        vendor_column_names = column_names[vendor][idx]
+    return vendor, vendor_column_names
+
+def _test_alternative_pointgroups(point_groups:[str]):
+    """ small function to look for other possible namings of the point groups, that seem to not yet be implemented within orix
+    
+    Needs probably to be extended in the future
+    
+    """
+    for i in range(len(point_groups)):
+        if point_groups[i]=='62':
+            point_groups[i]='622'
+    return point_groups
+            
