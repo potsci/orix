@@ -52,7 +52,7 @@ def file_reader(filename: str) -> CrystalMap:
     """
     # Get file heade
     phase_ids, phase_names, symmetries, lattice_constants = _get_osc_header(filename)
-    symmetries=_test_alternative_pointgroups(symmetries)
+    # symmetries=_test_alternative_pointgroups(symmetries)
     structures = []
     for name, abcABG in zip(phase_names, lattice_constants):
         abcABG=abcABG[0].tolist()
@@ -219,6 +219,15 @@ def _get_osc_header(file:str) -> Tuple[List[int], List[str], List[str], List[Lis
         CS['name'].append(PhaseName[k])
         phaseBytes = headerBytes[PhaseStart[k]+3:PhaseStart[k]+ 288] # not excatly sure where the offset of 3 is coming from
         CS['point_group'].append(str(np.frombuffer(phaseBytes[253:257], dtype=np.int32)[0]))
+        # proper_point_group = CS['point_group'].point_group.proper_subgroup
+        # point_group_name = proper_point_group.name
+        # for key, alias in point_group_aliases.items():
+        #     if point_group_name == key:
+        #         point_group_name = alias[0]
+        #         break
+        
+
+
         cellBytes = phaseBytes[257:281]
         CS['lattice_constants'].append([np.concatenate((np.frombuffer(cellBytes[0:12], dtype=np.float32),np.frombuffer(cellBytes[12:], dtype=np.float32)))])
         print(CS)
@@ -414,16 +423,16 @@ def _get_vendor_columns(n_cols_file: int) -> Tuple[str, List[str]]:
         vendor_column_names = column_names[vendor][idx]
     return vendor, vendor_column_names
 
-def _test_alternative_pointgroups(point_groups:[str]):
-    """ small function to look for other possible namings of the point groups, that seem to not yet be implemented within orix
+# def _test_alternative_pointgroups(point_groups:[str]):
+#     """ small function to look for other possible namings of the point groups, that seem to not yet be implemented within orix
     
-    Needs probably to be extended in the future
+#     Needs probably to be extended in the future
     
-    """
-    for i in range(len(point_groups)):
-        if point_groups[i]=='62':
-            point_groups[i]='622'
-    return point_groups
+#     """
+#     for i in range(len(point_groups)):
+#         if point_groups[i]=='62':
+#             point_groups[i]='622'
+#     return point_groups
             
 
 def _is_chemical(phases: [str])-> [str]:
