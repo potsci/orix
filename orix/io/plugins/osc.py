@@ -81,7 +81,12 @@ def file_reader(filename: str) -> CrystalMap:
             data_dict[name] = file_data[:, column]
         else:
             data_dict["prop"][name] = file_data[:, column]
-
+    
+    data_dict=_make_regular_grid(data_dict)
+    # drop values if the grid is hexagonal:
+    data_dict_test=data_dict
+    # print(data_dict_test.keys())
+    # data_dict = _make_regular_grid(data_dict)
     # Add phase list to dictionary
     data_dict["phase_list"] = PhaseList(
         names=phase_names,
@@ -105,7 +110,8 @@ def file_reader(filename: str) -> CrystalMap:
             (data_dict.pop("euler1"), data_dict.pop("euler2"), data_dict.pop("euler3"))
         ),
     )
-
+    # data_dict['ishex'] = True
+    # return data_dict also, to test functionallity
     return CrystalMap(**data_dict)
 
 
@@ -157,14 +163,16 @@ def _get_osc_header(file:str) -> Tuple[List[int], List[str], List[str], List[Lis
     import re
     import re
     pat = re.compile(r'''
-    (?<!\\.{3})[A-z]{1,2}[0-9]{0,4}[ ](?:[A-z]+\d+[A-z]*)*|
-    (?<!\\.{3})[A-z]{1}[a-z\s]{3,50}|#beginning big all small or all small
-    (?<!\\.{3})[A-Z]{4,50}| # all big
-    (?<!\\.{3})(?:[A-z]{1,2})+(?:[A-z]{1,2}[0-9]{1,3}\.{0,1}[0-9]{0,5})+|
-    (?<!\\.{3})(?:[A-z]){1,2}(?:[A-z]{1,2}[0-9]{1,2})+
-    (?<!\\.{3})[A-z]{1,2}[0-9]{0,4}[ ](?:[A-z]+\d+[A-z]*)*
-    #(?<!\\.{2})[[A-z](?:[A-z]{1,3}[0,9]{0,10}){2,10}
-    #(?<!\\.{2})[A-Z][a-z]?\d*|\((?:[^()]*(?:\(.*\))?[^()]*)+\)\d+''',flags=re.ASCII|re.VERBOSE)        #(?<!\\.{2})[A-Z][a-z]?\d*|\((?:[^()]*(?:\(.*\))?[^()]*)+\)\d+''',flags=re.ASCII|re.VERBOSE)
+        (?<!\\.{3})[A-z]{1,2}[0-9]{0,4}[ ](?:[A-z]+\d+[A-z]*)*|
+        (?<!\\.{3})[A-z]{1}[a-z\s]{3,50}|#beginning big all small or all small
+        (?<!\\.{3})[A-Z]{4,50}| # all big
+        (?<!\\.{3})(?:[A-z]{1,2})+(?:[A-z]{1,2}[0-9]{1,3}\.{0,1}[0-9]{0,5})+|
+        (?<!\\.{3})(?:[A-z]){1,2}(?:[A-z]{1,2}[0-9]{1,2})+
+        (?<!\\.{3})[A-z]{1,2}[0-9]{0,4}[ ](?:[A-z]+\d+[A-z]*)*
+        #(?<!\\.{2})[[A-z](?:[A-z]{1,3}[0,9]{0,10}){2,10}
+        #(?<!\\.{2})[A-Z][a-z]?\d*|\((?:[^()]*(?:\(.*\))?[^()]*)+\)\d+''',
+        flags=re.ASCII|re.VERBOSE
+        )        #(?<!\\.{2})[A-Z][a-z]?\d*|\((?:[^()]*(?:\(.*\))?[^()]*)+\)\d+''',flags=re.ASCII|re.VERBOSE)
     headerBytes_str="".join([chr(item) for item in headerBytes])
     osc_phases=re.findall(pat,headerBytes_str)
     osc_phases=_is_chemical(osc_phases)
@@ -430,10 +438,11 @@ def _is_chemical(phases: [str])-> [str]:
     # print(elems)
     elements_input=[]
     pat=re.compile(r'''[A-z]{4,50}(?!\d+)|
-                    [A-z]{1,2}(?=\d)|
-                    [A-z]{1,2}(?=[A-Z]{1,2})|
-                    [A-z]{1,2}(?=[A-Z]{1}[a-z]{1})|
-                    [A-z]{1,2}(?=[a-z]{2})''',flags=re.ASCII|re.VERBOSE)
+        [A-z]{1,2}(?=\d)|
+        [A-z]{1,2}(?=[A-Z]{1,2})|
+        [A-z]{1,2}(?=[A-Z]{1}[a-z]{1})|
+        [A-z]{1,2}(?=[a-z]{2})''',flags=re.ASCII|re.VERBOSE
+        )
     for phase in phases:
         check=1
         for el_input in re.findall(pat,phase):
@@ -448,3 +457,46 @@ def _is_chemical(phases: [str])-> [str]:
 
 
     return phases
+    
+
+def _make_regular_grid(datadict: dict):
+    """ In the hexagonal grid it might be, that in some rows there are more points than in others
+    Thus we want to find the rows (every 2nd) and remove on data point from them 
+        xxxxx          xxxx
+         xxxx   -- >    xxxx
+        xxxxx          xxxx
+    """  
+    if 'y' in datadict.keys():
+        counts_each = np.unique(datadict['y'],return_counts=True)[1]
+        counts=np.count_nonzero(np.unique(counts_each))
+        if counts == 1:
+            return datadict
+        if counts != 2:
+            warnings.warn('WARNING: you have more then two different length of the rowdata in your input')
+            return datadict
+        row_lengths=np.unique(datadict['y'],return_counts=True)[1][0:counts]
+        # row_lengths=[247,248]
+        print(row_lengths)
+        row_ind=np.argmax(row_lengths)
+        first_remove=(row_ind+1)*(row_lengths[row_ind]-1)
+        remove_vals=np.arange(first_remove,len(datadict['y']),row_lengths[0]+row_lengths[1])
+
+        print(len(datadict['y']))
+        # print((row_ind+1)*(row_lengths[row_ind]-1))
+        # print(datadict['y'][0:row_lengths[row_ind]+1])
+        # print(remove_vals)
+        for key in datadict.keys():
+            print(f'{key}: {type(datadict[key])}')
+            if type(datadict[key])==dict:
+                for nested_key in datadict[key].keys():
+                    datadict[key][nested_key]=np.delete(datadict[key][nested_key],remove_vals)
+            else:
+                datadict[key]=np.delete(datadict[key],remove_vals)
+        
+        datadict['ishex']=True
+        return datadict
+
+        # datadict['y'].pop()
+    else:
+        return datadict
+

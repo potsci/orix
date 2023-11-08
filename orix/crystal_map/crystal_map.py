@@ -25,7 +25,7 @@ import numpy as np
 from orix.crystal_map.crystal_map_properties import CrystalMapProperties
 from orix.crystal_map.phase_list import ALL_COLORS, Phase, PhaseList
 from orix.quaternion import Orientation, Rotation
-
+import warnings
 
 class CrystalMap:
     """Crystallographic map of orientations, crystal phases and key
@@ -213,6 +213,7 @@ class CrystalMap:
         prop: Optional[dict] = None,
         scan_unit: Optional[str] = "px",
         is_in_data: Optional[np.ndarray] = None,
+        ishex: Optional[bool]=None
     ):
         # Set rotations
         if not isinstance(rotations, Rotation):
@@ -301,7 +302,8 @@ class CrystalMap:
 
         # Set scan unit
         self.scan_unit = scan_unit
-
+        if ishex is not None:
+            self.ishex=ishex
         # Set properties
         if prop is None:
             prop = {}
@@ -850,14 +852,36 @@ class CrystalMap:
         >>> iq.shape
         (100, 117)
         """
+        counts = np.unique(self.y, return_counts=True)[1]
+        if not np.count_nonzero(np.unique(counts)) > 1: # for now this seems an okay method to test for the irregular grid shape
+            # print('hexagonal grid !!!!')
         # Get full map shape
-        map_shape = self._original_shape
+            map_shape = self._original_shape
+            map_size = np.prod(map_shape)
+            hexgrid=False
+        else:
+            print('hexagonal grid !!!!, we need to do something else')
+            hexgrid=True
+            # assumption: the hexagonal grid is just a shift of two regular grids by a vector 
+            unique_grid_pos_x = np.count_nonzero(np.unique(np.unique(self.y, return_counts=True)[1]))
+            unique_grid_pos_y = np.count_nonzero(np.unique(np.unique(self.x, return_counts=True)[1]))
+            print((unique_grid_pos_x,unique_grid_pos_y))
+            if not unique_grid_pos_x==unique_grid_pos_y:
+                warnings.warn('WARNING: Your X and Y grids seem to have different uniqueness')
+            x_shapes= np.unique(self.x, return_counts=True)[1][0:unique_grid_pos_x] #this gives us the unique counts of grid points per each row / column
+            y_shapes= np.unique(self.y, return_counts=True)[1][0:unique_grid_pos_x]
+            map_size= 0
+            for i in range(len(x_shapes)):
+                map_size+= x_shapes[i]*y_shapes[i]
+            # map_size = np.prod(map_shape)
+            map_shape = self._original_shape
+            print(map_size)
 
         # Declare array of correct shape, accounting for RGB
         # TODO: Better account for `item.shape`, e.g. quaternions
         #  (item.shape[-1] == 4) in a more general way than here (not
         #  more if/else)!
-        map_size = np.prod(map_shape)
+
         if isinstance(item, np.ndarray):
             array = np.empty(map_size, dtype=item.dtype)
             if item.shape[-1] == 3 and map_size > 3:  # Assume RGB
@@ -894,14 +918,22 @@ class CrystalMap:
                 raise ValueError(f"{item} is {data}.")
             else:
                 # TODO: Account for 2D map with more than one value per point
+                print(self.is_in_data.shape)
                 array[self.is_in_data] = data
                 array = array.astype(data.dtype)
-
+        
         # Slice and reshape array
+       
+        
+        # if hexgrid:
+        #     slices = self._data_slices_from_coordinates_hex()
+        #     print(slices)
+        #     pass
+        # else:
         slices = self._data_slices_from_coordinates()
         reshaped_array = array.reshape(map_shape)
         sliced_array = reshaped_array[slices]
-
+        
         # Reshape and slice mask with points not in data
         if array.shape[-1] == 3 and map_size > 3:  # RGB
             not_in_data = np.dstack((~self.is_in_data,) * 3)
@@ -1051,7 +1083,7 @@ class CrystalMap:
             return fig
 
     @staticmethod
-    def _step_size_from_coordinates(coordinates: np.ndarray) -> float:
+    def _step_size_from_coordinates(coordinates: np.ndarray, ishex: Optional[bool] = None) -> float:
         """Return step size in input ``coordinates`` array.
 
         Parameters
@@ -1064,13 +1096,50 @@ class CrystalMap:
         step_size
             Step size in ``coordinates`` array.
         """
-        unique_sorted = np.sort(np.unique(coordinates))
+        unique_sorted,unique_index = np.unique(coordinates,return_index=True) ## if we have a hex grid, this sorting will make the step size wrong
         step_size = 0
-        if unique_sorted.size != 1:
-            step_size = unique_sorted[1] - unique_sorted[0]
+        if unique_index[2]-unique_index[1]<0:
+            # unique_sorted=np.unique(coordinates)
+            # print('ishex')
+            if unique_sorted.size != 1:
+                step_size = unique_sorted[2] - unique_sorted[0]
+        else:
+            if unique_sorted.size != 1:
+                step_size = unique_sorted[1] - unique_sorted[0]
         return step_size
 
     def _data_slices_from_coordinates(self, only_is_in_data: bool = True) -> tuple:
+        """Return a tuple of slices defining the current data extent in
+        all directions.
+
+        Parameters
+        ----------
+        only_is_in_data
+            Whether to determine slices of points in data or all points.
+            Default is ``True``.
+
+        Returns
+        -------
+        slices
+            Data slice in each existing dimension, in (z, y, x) order.
+        """
+        if only_is_in_data:
+            coordinates = self._coordinates
+        else:
+            coordinates = self._all_coordinates
+
+        # Loop over dimension coordinates and step sizes
+        slices = []
+        for coords, step in zip(coordinates.values(), self._step_sizes.values()):
+            if coords is not None and step != 0:
+                c_min, c_max = np.min(coords), np.max(coords)
+                i_min = int(np.around(c_min / step))
+                i_max = int(np.around((c_max / step) + 1))
+                slices.append(slice(i_min, i_max))
+
+        return tuple(slices)
+    
+    def _data_slices_from_coordinates_hex(self, only_is_in_data: bool = True) -> tuple:
         """Return a tuple of slices defining the current data extent in
         all directions.
 
@@ -1178,3 +1247,23 @@ def create_coordinate_arrays(
         map_size *= ny
 
     return d, map_size
+def _check_hex(self) -> bool:
+    """" this function checks, whether there is a irregular behaviour of 
+    the grid and therefore it probably is hexagonal"""
+    counts = np.unique(self.y, return_counts=True)[1]
+    if not np.count_nonzero(np.unique(counts)) > 1: # for now this seems an okay method to test for the irregular grid shape
+        warnings.warn('WARNIKNG: Your data apperas to be in a hexagonal grid !!!!')
+        return True
+    else:
+        return False 
+def _check_hex_cords(coordinates: np.ndarray) -> bool:
+    """" this function checks, whether there is a irregular behaviour of 
+    the grid and therefore it probably is hexagonal (assume, we allready dropped the variance of number of eleements in rows )"""
+    
+    counts = np.unique(coordintaes, return_counts=True)[1]
+    if not np.count_nonzero(np.unique(counts)) > 1: # for now this seems an okay method to test for the irregular grid shape
+        warnings.warn('WARNIKNG: Your data apperas to be in a hexagonal grid !!!!')
+        return True
+    else:
+        return False 
+
