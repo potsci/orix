@@ -39,4 +39,5 @@ plugin_list = [
     bruker_h5ebsd,
     emsoft_h5ebsd,
     orix_hdf5,
+    osc,
 ]

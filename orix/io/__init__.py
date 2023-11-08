@@ -49,6 +49,7 @@ extensions = [plugin.file_extensions for plugin in plugin_list if plugin.writes]
 __all__ = [
     "loadang",
     "loadctf",
+    "loadosc"
     "load",
     "save",
 ]
@@ -71,6 +72,7 @@ def loadang(file_string: str) -> Rotation:
     data = np.loadtxt(file_string)
     euler = data[:, :3]
     return Rotation.from_euler(euler)
+
 
 
 def loadctf(file_string: str) -> Rotation:
