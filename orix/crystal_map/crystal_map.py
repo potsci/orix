@@ -852,30 +852,13 @@ class CrystalMap:
         >>> iq.shape
         (100, 117)
         """
-        counts = np.unique(self.y, return_counts=True)[1]
-        if not np.count_nonzero(np.unique(counts)) > 1: # for now this seems an okay method to test for the irregular grid shape
+        # counts = np.unique(self.y, return_counts=True)[1]
+        # if not np.count_nonzero(np.unique(counts)) > 1: # for now this seems an okay method to test for the irregular grid shape
             # print('hexagonal grid !!!!')
         # Get full map shape
-            map_shape = self._original_shape
-            map_size = np.prod(map_shape)
-            hexgrid=False
-        else:
-            print('hexagonal grid !!!!, we need to do something else')
-            hexgrid=True
-            # assumption: the hexagonal grid is just a shift of two regular grids by a vector 
-            unique_grid_pos_x = np.count_nonzero(np.unique(np.unique(self.y, return_counts=True)[1]))
-            unique_grid_pos_y = np.count_nonzero(np.unique(np.unique(self.x, return_counts=True)[1]))
-            print((unique_grid_pos_x,unique_grid_pos_y))
-            if not unique_grid_pos_x==unique_grid_pos_y:
-                warnings.warn('WARNING: Your X and Y grids seem to have different uniqueness')
-            x_shapes= np.unique(self.x, return_counts=True)[1][0:unique_grid_pos_x] #this gives us the unique counts of grid points per each row / column
-            y_shapes= np.unique(self.y, return_counts=True)[1][0:unique_grid_pos_x]
-            map_size= 0
-            for i in range(len(x_shapes)):
-                map_size+= x_shapes[i]*y_shapes[i]
-            # map_size = np.prod(map_shape)
-            map_shape = self._original_shape
-            print(map_size)
+        map_shape = self._original_shape
+        map_size = np.prod(map_shape)
+        hexgrid=False
 
         # Declare array of correct shape, accounting for RGB
         # TODO: Better account for `item.shape`, e.g. quaternions
@@ -1134,7 +1117,15 @@ class CrystalMap:
             if coords is not None and step != 0:
                 c_min, c_max = np.min(coords), np.max(coords)
                 i_min = int(np.around(c_min / step))
-                i_max = int(np.around((c_max / step) + 1))
+                coords_unique=np.unique(coords)
+            
+                if not np.isclose(coords_unique[1]-coords_unique[0],step,rtol=1e-03):
+                    # we have again the shift in the data, and therefore count one slice too much
+                    i_max=int(np.around((c_max / step) ))
+                    # print(coords_unique[1]-coords_unique[0])
+                    # print(f'step:{step}')
+                else:
+                    i_max = int(np.around((c_max / step) + 1))
                 slices.append(slice(i_min, i_max))
 
         return tuple(slices)
@@ -1260,7 +1251,7 @@ def _check_hex_cords(coordinates: np.ndarray) -> bool:
     """" this function checks, whether there is a irregular behaviour of 
     the grid and therefore it probably is hexagonal (assume, we allready dropped the variance of number of eleements in rows )"""
     
-    counts = np.unique(coordintaes, return_counts=True)[1]
+    counts = np.unique(coordinates, return_counts=True)[1]
     if not np.count_nonzero(np.unique(counts)) > 1: # for now this seems an okay method to test for the irregular grid shape
         warnings.warn('WARNIKNG: Your data apperas to be in a hexagonal grid !!!!')
         return True
